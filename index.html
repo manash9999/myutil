@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Meter Reading OCR App</title>
+  <style>
+    body {margin:0; font-family:system-ui, sans-serif; background:#0b1020; color:#e8ebf4;}
+    .wrap {max-width:800px; margin:auto; padding:20px;}
+    h1 {font-size:22px; margin-bottom:10px;}
+    video, canvas, img {max-width:100%; border:2px solid #2a3d73; border-radius:12px;}
+    .controls {margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;}
+    button {padding:10px 16px; border-radius:8px; border:none; cursor:pointer; font-weight:600;}
+    button.primary {background:#2563eb; color:#fff;}
+    button.alt {background:#374151; color:#fff;}
+    .ocr-box {margin-top:12px;}
+    .ocr-box textarea {width:100%; height:80px; border-radius:8px; background:#0f172a; color:#e8ebf4; padding:10px; border:1px solid #334155;}
+    .overlay {position:absolute; border:2px dashed red; pointer-events:none;}
+    #confirmBox {margin-top:15px; background:#111831; padding:10px; border-radius:10px; display:none;}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Meter Reading OCR</h1>
+    <p>This app captures a meter image with GPS, extracts the reading, and asks you to confirm or edit.</p>
+
+    <div style="position:relative">
+      <video id="video" autoplay playsinline></video>
+      <div id="boundary" class="overlay"></div>
+    </div>
+
+    <div class="controls">
+      <button class="primary" id="capture">📸 Capture Meter</button>
+    </div>
+
+    <canvas id="canvas" style="display:none"></canvas>
+
+    <div id="confirmBox">
+      <div class="ocr-box">
+        <label>Detected Number (edit if incorrect):</label>
+        <textarea id="reading"></textarea>
+      </div>
+      <div class="controls">
+        <button class="primary" id="confirm">✅ Confirm Reading</button>
+      </div>
+    </div>
+
+    <p id="geo">📍 Location: Not captured yet</p>
+    <div id="result"></div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const reading = document.getElementById('reading');
+    const result = document.getElementById('result');
+    const boundary = document.getElementById('boundary');
+    const confirmBox = document.getElementById('confirmBox');
+
+    // ----- Camera: image-only capture via current frame -----
+    navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}}, audio:false})
+      .then(stream => video.srcObject = stream)
+      .catch(err => alert('Camera access denied: ' + err));
+
+    // ----- Boundary (ROI) overlay in the center of the video -----
+    function setBoundary(){
+      const rect = video.getBoundingClientRect();
+      const w = rect.width * 0.7;   // ~70% of video width
+      const h = rect.height * 0.28; // wide strip for meter window
+      boundary.style.left = ((rect.width - w)/2) + 'px';
+      boundary.style.top = ((rect.height - h)/2) + 'px';
+      boundary.style.width = w + 'px';
+      boundary.style.height = h + 'px';
+      boundary.style.position = 'absolute';
+      boundary.style.border = '2px dashed #6ea8fe';
+      boundary.style.borderRadius = '10px';
+      boundary.style.pointerEvents = 'none';
+    }
+    video.addEventListener('loadedmetadata', setBoundary);
+    window.addEventListener('resize', setBoundary);
+
+    // Map CSS ROI box to video pixels and crop
+    function captureCroppedROI(){
+      const vw = video.videoWidth, vh = video.videoHeight;
+      if (!vw || !vh) return null;
+
+      // Draw full frame
+      canvas.width = vw; canvas.height = vh;
+      ctx.drawImage(video, 0, 0, vw, vh);
+
+      // Compute ROI in CSS space
+      const vRect = video.getBoundingClientRect();
+      const bRect = boundary.getBoundingClientRect();
+      const rx = bRect.left - vRect.left;
+      const ry = bRect.top - vRect.top;
+      const rw = bRect.width;
+      const rh = bRect.height;
+
+      // Convert ROI to video pixel space
+      const sx = rx / vRect.width  * vw;
+      const sy = ry / vRect.height * vh;
+      const sw = rw / vRect.width  * vw;
+      const sh = rh / vRect.height * vh;
+
+      // Crop to an offscreen canvas
+      const off = document.createElement('canvas');
+      off.width = Math.round(sw);
+      off.height = Math.round(sh);
+      const octx = off.getContext('2d');
+      octx.imageSmoothingEnabled = true;
+      octx.drawImage(canvas, sx, sy, sw, sh, 0, 0, off.width, off.height);
+
+      // Preprocess: grayscale + hard threshold to boost digits
+      const img = octx.getImageData(0,0,off.width,off.height);
+      const d = img.data; const T = 180;
+      for (let i=0;i<d.length;i+=4){
+        const y = 0.2126*d[i] + 0.7152*d[i+1] + 0.0722*d[i+2];
+        const v = y > T ? 255 : 0;
+        d[i]=d[i+1]=d[i+2]=v; // binarize
+      }
+      octx.putImageData(img,0,0);
+      return off.toDataURL('image/png');
+    }
+
+    // Geolocation
+    async function getLocation(){
+      if (!('geolocation' in navigator)) return null;
+      return new Promise(resolve => {
+        navigator.geolocation.getCurrentPosition(
+          pos => resolve({lat:pos.coords.latitude, lon:pos.coords.longitude, acc:pos.coords.accuracy}),
+          () => resolve(null),
+          {enableHighAccuracy:true, timeout:8000, maximumAge:5000}
+        );
+      });
+    }
+
+    // Capture + OCR + confirm flow
+    document.getElementById('capture').addEventListener('click', async ()=>{
+      const roiPNG = captureCroppedROI();
+      if (!roiPNG){ alert('Camera not ready yet.'); return; }
+
+      const { data } = await Tesseract.recognize(roiPNG, 'eng', {
+        tessedit_char_whitelist:'0123456789.',
+        psm:7 // single line
+      });
+      const ocrText = (data.text||'').replace(/[^0-9.]/g,'').trim();
+      reading.value = ocrText;
+      confirmBox.style.display = 'block';
+
+      // Attach confirmation handler once per capture
+      const confirmBtn = document.getElementById('confirm');
+      confirmBtn.onclick = async ()=>{
+        const userVal = (reading.value||'').trim();
+        if (!userVal){ alert('Please enter or confirm a number'); return; }
+        const loc = await getLocation();
+        const payload = {
+          confirmedReading: userVal,
+          ocrReading: ocrText,
+          capturedAt: new Date().toISOString(),
+          location: loc ? {lat:+loc.lat.toFixed(6), lon:+loc.lon.toFixed(6), accuracy_m: Math.round(loc.acc)} : null,
+          imageDataUrl: roiPNG
+        };
+        // Show compact summary; in real app you would POST this payload
+        const locTxt = payload.location ? ` (±${payload.location.accuracy_m} m)` : '';
+        result.innerHTML = `✅ Final Meter Reading: <b>${payload.confirmedReading}</b><br>`+
+          (payload.location ? `📍 ${payload.location.lat}, ${payload.location.lon}${locTxt}<br>` : '')+
+          `🕒 ${new Date(payload.capturedAt).toLocaleString()}`+
+          `<div style="margin-top:8px"><a id="dljson" href="#">Download JSON</a></div>`;
+        // Download link
+        const a = document.getElementById('dljson');
+        a.onclick = () => {
+          const blob = new Blob([JSON.stringify(payload,null,2)], {type:'application/json'});
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url; link.download = 'meter_reading.json';
+          document.body.appendChild(link); link.click(); link.remove();
+          URL.revokeObjectURL(url);
+        };
+      };
+    });
+
+    // Initial quick location ping (for UX)
+    (async()=>{
+      const loc = await getLocation();
+      const geoP = document.getElementById('geo');
+      if (loc){ geoP.textContent = `📍 Location: ${loc.lat.toFixed(6)}, ${loc.lon.toFixed(6)} (±${Math.round(loc.acc)} m)`; }
+    })();
+  </script>
+</body>
+</html>
