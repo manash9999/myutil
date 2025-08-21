@@ -3,190 +3,257 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Meter Reading OCR App</title>
+  <title>Meter OCR — Fixed ROI for Jeter Type 1</title>
+  <meta name="color-scheme" content="light dark" />
   <style>
-    body {margin:0; font-family:system-ui, sans-serif; background:#0b1020; color:#e8ebf4;}
-    .wrap {max-width:800px; margin:auto; padding:20px;}
-    h1 {font-size:22px; margin-bottom:10px;}
-    video, canvas, img {max-width:100%; border:2px solid #2a3d73; border-radius:12px;}
-    .controls {margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;}
-    button {padding:10px 16px; border-radius:8px; border:none; cursor:pointer; font-weight:600;}
-    button.primary {background:#2563eb; color:#fff;}
-    button.alt {background:#374151; color:#fff;}
-    .ocr-box {margin-top:12px;}
-    .ocr-box textarea {width:100%; height:80px; border-radius:8px; background:#0f172a; color:#e8ebf4; padding:10px; border:1px solid #334155;}
-    .overlay {position:absolute; border:2px dashed red; pointer-events:none;}
-    #confirmBox {margin-top:15px; background:#111831; padding:10px; border-radius:10px; display:none;}
+    :root{ --bg:#0b1020; --ink:#e8ebf4; --muted:#a8b3cf; --card:#111831; --line:#1f2941; --pri:#6ea8fe }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial;background:linear-gradient(180deg,#0a0f1e,#0e1530 40%,#0a1020);color:var(--ink)}
+    .wrap{max-width:1000px;margin:auto;padding:18px}
+    h1{font-size:clamp(22px,3vw,32px);margin:8px 0 6px}
+    p.top{margin:0 0 12px;color:var(--muted)}
+
+    .card{background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.02));border:1px solid var(--line);border-radius:16px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.18)}
+    .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    button{background:#142045;border:1px solid #21305a;color:#e8ebf4;padding:8px 12px;border-radius:10px;cursor:pointer}
+    button.primary{background:linear-gradient(180deg,#2a54d9,#1f43b6);border:1px solid #2a4fc8}
+    .pill{display:inline-flex;gap:6px;align-items:center;padding:6px 10px;border:1px solid #334178;border-radius:999px;color:#cfe0ff;font-size:12px}
+
+    .camera{position:relative;border:1px solid var(--line);border-radius:16px;overflow:hidden;background:#000}
+    video{width:100%;height:auto;display:block}
+    .roi{position:absolute;border:2px dashed #6ea8fe;border-radius:10px;pointer-events:none}
+    .hint{position:absolute;left:50%;transform:translateX(-50%);bottom:10px;background:rgba(14,26,54,.7);border:1px solid #2a3d73;border-radius:999px;padding:6px 10px;color:#cfe0ff;font-size:12px}
+
+    .cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    @media (max-width: 900px){.cols{grid-template-columns:1fr}}
+    textarea{width:100%;min-height:150px;resize:vertical;background:#0b1330;color:#e8ebf4;border:1px solid #233061;border-radius:12px;padding:10px}
+
+    dialog{background:#0f1734;color:#e8ebf4;border:1px solid #2a3d73;border-radius:16px;padding:16px;max-width:520px}
+    dialog::backdrop{background:rgba(0,0,0,.6)}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>Meter Reading OCR</h1>
-    <p>This app captures a meter image with GPS, extracts the reading, and asks you to confirm or edit.</p>
+    <h1>Meter OCR — Fixed ROI for Jeter Type 1</h1>
+    <p class="top">Align the meter roughly; the app auto‑crops the <b>black digit window</b> using a fixed Region‑Of‑Interest tuned for this model. Flow: <b>Open Camera → Capture → OCR → Confirm or edit → Save</b>.</p>
 
-    <div style="position:relative">
-      <video id="video" autoplay playsinline></video>
-      <div id="boundary" class="overlay"></div>
-    </div>
-
-    <div class="controls">
-      <button class="primary" id="capture">📸 Capture Meter</button>
-    </div>
-
-    <canvas id="canvas" style="display:none"></canvas>
-
-    <div id="confirmBox">
-      <div class="ocr-box">
-        <label>Detected Number (edit if incorrect):</label>
-        <textarea id="reading"></textarea>
+    <section class="card">
+      <div class="camera">
+        <video id="video" playsinline autoplay muted></video>
+        <div id="roi" class="roi"></div>
+        <div class="hint">Keep the black digit window inside this box</div>
       </div>
-      <div class="controls">
-        <button class="primary" id="confirm">✅ Confirm Reading</button>
+      <div class="row" style="margin-top:10px">
+        <button id="openCam" class="primary">📷 Open Camera</button>
+        <button id="capture">🧩 Capture & OCR</button>
+        <span id="gps" class="pill">GPS: …</span>
+        <span id="status" class="pill">Idle</span>
       </div>
-    </div>
+      <div class="row" style="margin-top:10px">
+        <button id="downloadCSV">⬇️ CSV</button>
+        <button id="downloadJSON">⬇️ JSON</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <img id="thumb" alt="capture" style="max-width:100%;border:1px solid #233061;border-radius:10px" />
+      </div>
+    </section>
 
-    <p id="geo">📍 Location: Not captured yet</p>
-    <div id="result"></div>
+    <section class="card" style="margin-top:12px">
+      <div class="cols">
+        <div>
+          <h3 style="margin:6px 0">Extracted Numbers</h3>
+          <textarea id="numbers" readonly></textarea>
+        </div>
+        <div>
+          <h3 style="margin:6px 0">Raw OCR Text</h3>
+          <textarea id="raw" readonly></textarea>
+        </div>
+      </div>
+    </section>
   </div>
+
+  <dialog id="confirmDlg">
+    <form method="dialog">
+      <h3>Confirm Meter Reading</h3>
+      <p style="font:12px ui-monospace,monospace">OCR detected: <b id="ocrValue">—</b></p>
+      <label>Enter/confirm reading
+        <input id="finalReading" type="text" inputmode="decimal" pattern="[0-9.]*" style="width:100%;padding:8px;border-radius:8px;border:1px solid #334155;background:#0b1328;color:#e8ebf4" />
+      </label>
+      <div class="row" style="margin-top:8px">
+        <span class="pill" id="metaTime">Time: —</span>
+        <span class="pill" id="metaGps">GPS: —</span>
+      </div>
+      <div class="row" style="justify-content:flex-end;margin-top:8px">
+        <button value="cancel">Cancel</button>
+        <button value="ok" class="primary">Confirm</button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script>
-    const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
-    const reading = document.getElementById('reading');
-    const result = document.getElementById('result');
-    const boundary = document.getElementById('boundary');
-    const confirmBox = document.getElementById('confirmBox');
+    const qs = id => document.getElementById(id);
+    const video = qs('video');
+    const roiEl = qs('roi');
+    const openCam = qs('openCam');
+    const captureBtn = qs('capture');
+    const gpsPill = qs('gps');
+    const statusPill = qs('status');
+    const rawOut = qs('raw');
+    const numsOut = qs('numbers');
+    const thumb = qs('thumb');
 
-    // ----- Camera: image-only capture via current frame -----
-    navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}}, audio:false})
-      .then(stream => video.srcObject = stream)
-      .catch(err => alert('Camera access denied: ' + err));
+    const confirmDlg = qs('confirmDlg');
+    const ocrValueEl = qs('ocrValue');
+    const finalReadingEl = qs('finalReading');
+    const metaTime = qs('metaTime');
+    const metaGps = qs('metaGps');
 
-    // ----- Boundary (ROI) overlay in the center of the video -----
-    function setBoundary(){
-      const rect = video.getBoundingClientRect();
-      const w = rect.width * 0.7;   // ~70% of video width
-      const h = rect.height * 0.28; // wide strip for meter window
-      boundary.style.left = ((rect.width - w)/2) + 'px';
-      boundary.style.top = ((rect.height - h)/2) + 'px';
-      boundary.style.width = w + 'px';
-      boundary.style.height = h + 'px';
-      boundary.style.position = 'absolute';
-      boundary.style.border = '2px dashed #6ea8fe';
-      boundary.style.borderRadius = '10px';
-      boundary.style.pointerEvents = 'none';
+    const downloadCSV = qs('downloadCSV');
+    const downloadJSON = qs('downloadJSON');
+
+    let lastRecord = null; // {reading, ocr, lat, lon, accuracy, capturedAtISO}
+    let lastImageDataUrl = null;
+
+    function status(t){ statusPill.textContent = t; }
+
+    // ---- Fixed ROI tuned for Jeter Type 1 ----
+    // Percentages relative to the video frame
+    const ROI_CFG = { wPct: 0.72, hPct: 0.18, centerXPct: 0.50, centerYPct: 0.60 };
+
+    function layoutROI(){
+      const r = video.getBoundingClientRect();
+      const w = r.width * ROI_CFG.wPct;
+      const h = r.height * ROI_CFG.hPct;
+      const left = r.width * (ROI_CFG.centerXPct - ROI_CFG.wPct/2);
+      const top  = r.height* (ROI_CFG.centerYPct - ROI_CFG.hPct/2);
+      Object.assign(roiEl.style, { left:left+'px', top:top+'px', width:w+'px', height:h+'px' });
     }
-    video.addEventListener('loadedmetadata', setBoundary);
-    window.addEventListener('resize', setBoundary);
 
-    // Map CSS ROI box to video pixels and crop
-    function captureCroppedROI(){
-      const vw = video.videoWidth, vh = video.videoHeight;
-      if (!vw || !vh) return null;
+    function getGPS(){
+      if (!('geolocation' in navigator)) { gpsPill.textContent = 'GPS: not available'; return Promise.resolve(null); }
+      return new Promise((resolve)=>{
+        navigator.geolocation.getCurrentPosition(pos =>{
+          const { latitude:lat, longitude:lon, accuracy } = pos.coords;
+          gpsPill.textContent = `GPS: ${lat.toFixed(5)}, ${lon.toFixed(5)} ±${Math.round(accuracy)}m`;
+          resolve({lat,lon,accuracy});
+        }, _ => { gpsPill.textContent = 'GPS: denied'; resolve(null); }, { enableHighAccuracy:true, timeout:8000, maximumAge:5000 });
+      });
+    }
 
-      // Draw full frame
-      canvas.width = vw; canvas.height = vh;
-      ctx.drawImage(video, 0, 0, vw, vh);
-
-      // Compute ROI in CSS space
-      const vRect = video.getBoundingClientRect();
-      const bRect = boundary.getBoundingClientRect();
-      const rx = bRect.left - vRect.left;
-      const ry = bRect.top - vRect.top;
-      const rw = bRect.width;
-      const rh = bRect.height;
-
-      // Convert ROI to video pixel space
-      const sx = rx / vRect.width  * vw;
-      const sy = ry / vRect.height * vh;
-      const sw = rw / vRect.width  * vw;
-      const sh = rh / vRect.height * vh;
-
-      // Crop to an offscreen canvas
-      const off = document.createElement('canvas');
-      off.width = Math.round(sw);
-      off.height = Math.round(sh);
-      const octx = off.getContext('2d');
-      octx.imageSmoothingEnabled = true;
-      octx.drawImage(canvas, sx, sy, sw, sh, 0, 0, off.width, off.height);
-
-      // Preprocess: grayscale + hard threshold to boost digits
-      const img = octx.getImageData(0,0,off.width,off.height);
-      const d = img.data; const T = 180;
-      for (let i=0;i<d.length;i+=4){
-        const y = 0.2126*d[i] + 0.7152*d[i+1] + 0.0722*d[i+2];
-        const v = y > T ? 255 : 0;
-        d[i]=d[i+1]=d[i+2]=v; // binarize
+    async function openCamera(){
+      try{
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal:'environment' } }, audio:false });
+        video.srcObject = stream;
+        status('Camera ready');
+        layoutROI();
+        getGPS();
+      }catch(e){
+        alert('Camera access failed: ' + (e && e.name || e));
+        status('Camera failed');
       }
-      octx.putImageData(img,0,0);
-      return off.toDataURL('image/png');
     }
 
-    // Geolocation
-    async function getLocation(){
-      if (!('geolocation' in navigator)) return null;
-      return new Promise(resolve => {
-        navigator.geolocation.getCurrentPosition(
-          pos => resolve({lat:pos.coords.latitude, lon:pos.coords.longitude, acc:pos.coords.accuracy}),
-          () => resolve(null),
-          {enableHighAccuracy:true, timeout:8000, maximumAge:5000}
-        );
+    openCam.addEventListener('click', openCamera);
+    video.addEventListener('loadedmetadata', layoutROI);
+    window.addEventListener('resize', layoutROI);
+
+    function captureAndCrop(){
+      const vw = video.videoWidth, vh = video.videoHeight;
+      if (!vw || !vh){ alert('Camera not ready yet.'); return null; }
+      // Full frame
+      const full = document.createElement('canvas');
+      full.width = vw; full.height = vh;
+      full.getContext('2d').drawImage(video, 0, 0, vw, vh);
+      // Fixed ROI in video pixel space
+      const x = vw * (ROI_CFG.centerXPct - ROI_CFG.wPct/2);
+      const y = vh * (ROI_CFG.centerYPct - ROI_CFG.hPct/2);
+      const w = vw * ROI_CFG.wPct;
+      const h = vh * ROI_CFG.hPct;
+      // Crop
+      const crop = document.createElement('canvas');
+      crop.width = Math.round(w); crop.height = Math.round(h);
+      crop.getContext('2d').drawImage(full, x, y, w, h, 0, 0, w, h);
+      return crop.toDataURL('image/png');
+    }
+
+    function preprocessDataUrl(dataUrl, threshold=180){
+      return new Promise(async (resolve)=>{
+        const img = new Image(); img.src = dataUrl; await img.decode();
+        const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+        const cx = c.getContext('2d'); cx.drawImage(img,0,0);
+        const im = cx.getImageData(0,0,c.width,c.height); const d = im.data;
+        for (let i=0;i<d.length;i+=4){
+          const y = 0.2126*d[i] + 0.7152*d[i+1] + 0.0722*d[i+2];
+          const v = y > threshold ? 255 : 0; d[i]=d[i+1]=d[i+2]=v;
+        }
+        cx.putImageData(im,0,0);
+        resolve(c.toDataURL('image/png'));
       });
     }
 
-    // Capture + OCR + confirm flow
-    document.getElementById('capture').addEventListener('click', async ()=>{
-      const roiPNG = captureCroppedROI();
-      if (!roiPNG){ alert('Camera not ready yet.'); return; }
+    async function ocrDataUrl(dataUrl){
+      status('Processing…');
+      const bin = await preprocessDataUrl(dataUrl, 180);
+      const { data } = await Tesseract.recognize(bin, 'eng', { tessedit_char_whitelist:'0123456789', psm:7 });
+      const text = (data && data.text ? data.text : '').trim();
+      rawOut.value = text;
+      const numbers = (text.match(/\d+/g) || []);
+      numsOut.value = numbers.join('\n');
+      status('OCR done');
+      return numbers[0] || '';
+    }
 
-      const { data } = await Tesseract.recognize(roiPNG, 'eng', {
-        tessedit_char_whitelist:'0123456789.',
-        psm:7 // single line
-      });
-      const ocrText = (data.text||'').replace(/[^0-9.]/g,'').trim();
-      reading.value = ocrText;
-      confirmBox.style.display = 'block';
-
-      // Attach confirmation handler once per capture
-      const confirmBtn = document.getElementById('confirm');
-      confirmBtn.onclick = async ()=>{
-        const userVal = (reading.value||'').trim();
-        if (!userVal){ alert('Please enter or confirm a number'); return; }
-        const loc = await getLocation();
-        const payload = {
-          confirmedReading: userVal,
-          ocrReading: ocrText,
-          capturedAt: new Date().toISOString(),
-          location: loc ? {lat:+loc.lat.toFixed(6), lon:+loc.lon.toFixed(6), accuracy_m: Math.round(loc.acc)} : null,
-          imageDataUrl: roiPNG
-        };
-        // Show compact summary; in real app you would POST this payload
-        const locTxt = payload.location ? ` (±${payload.location.accuracy_m} m)` : '';
-        result.innerHTML = `✅ Final Meter Reading: <b>${payload.confirmedReading}</b><br>`+
-          (payload.location ? `📍 ${payload.location.lat}, ${payload.location.lon}${locTxt}<br>` : '')+
-          `🕒 ${new Date(payload.capturedAt).toLocaleString()}`+
-          `<div style="margin-top:8px"><a id="dljson" href="#">Download JSON</a></div>`;
-        // Download link
-        const a = document.getElementById('dljson');
-        a.onclick = () => {
-          const blob = new Blob([JSON.stringify(payload,null,2)], {type:'application/json'});
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url; link.download = 'meter_reading.json';
-          document.body.appendChild(link); link.click(); link.remove();
-          URL.revokeObjectURL(url);
-        };
-      };
+    captureBtn.addEventListener('click', async () => {
+      const shot = captureAndCrop();
+      if (!shot) return;
+      lastImageDataUrl = shot; thumb.src = shot;
+      const ocrVal = await ocrDataUrl(shot);
+      const gps = await getGPS();
+      const ts = new Date();
+      // Confirm dialog
+      ocrValueEl.textContent = ocrVal || '—';
+      finalReadingEl.value = ocrVal || '';
+      metaTime.textContent = 'Time: ' + ts.toLocaleString();
+      metaGps.textContent = gps ? `GPS: ${gps.lat.toFixed(5)}, ${gps.lon.toFixed(5)} ±${Math.round(gps.accuracy)}m` : 'GPS: —';
+      confirmDlg.showModal();
     });
 
-    // Initial quick location ping (for UX)
-    (async()=>{
-      const loc = await getLocation();
-      const geoP = document.getElementById('geo');
-      if (loc){ geoP.textContent = `📍 Location: ${loc.lat.toFixed(6)}, ${loc.lon.toFixed(6)} (±${Math.round(loc.acc)} m)`; }
-    })();
+    confirmDlg.addEventListener('close', () => {
+      if (confirmDlg.returnValue !== 'ok') return;
+      const reading = (finalReadingEl.value||'').trim();
+      const ocr = (ocrValueEl.textContent||'').trim();
+      const capturedAtISO = new Date().toISOString();
+      const gpsText = gpsPill.textContent.replace('GPS: ','');
+      let lat=null, lon=null, accuracy=null;
+      const m = gpsText.match(/(-?\d+\.\d+),\s*(-?\d+\.\d+).*?±(\d+)/);
+      if (m){ lat=+m[1]; lon=+m[2]; accuracy=+m[3]; }
+      lastRecord = { reading, ocr, lat, lon, accuracy, capturedAtISO };
+      status('Saved');
+    });
+
+    function download(name, text){
+      const blob = new Blob([text], {type:'text/plain'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    downloadCSV.addEventListener('click', () => {
+      if (!lastRecord){ alert('No confirmed reading yet.'); return; }
+      const rows = [ ['capturedAtISO','lat','lon','accuracy_m','ocr','reading'], [ lastRecord.capturedAtISO||'', lastRecord.lat||'', lastRecord.lon||'', lastRecord.accuracy||'', lastRecord.ocr||'', lastRecord.reading||'' ] ];
+      const csv = rows.map(r=>r.join(',')).join('\n');
+      download('meter_reading.csv', csv);
+    });
+
+    downloadJSON.addEventListener('click', () => {
+      if (!lastRecord){ alert('No confirmed reading yet.'); return; }
+      const payload = { ...lastRecord, imageDataUrl: lastImageDataUrl };
+      download('meter_reading.json', JSON.stringify(payload, null, 2));
+    });
+
+    // Auto layout hint if camera permission already granted
+    (async()=>{ try{ const p = await navigator.permissions.query({name:'camera'}); if (p.state==='granted') openCamera(); }catch{} })();
   </script>
 </body>
 </html>
